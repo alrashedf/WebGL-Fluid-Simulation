@@ -377,7 +377,7 @@ function createProgram (vertexShader, fragmentShader) {
 }
 
 function getUniforms (program) {
-    let uniforms = [];
+    let uniforms = {};
     let uniformCount = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS);
     for (let i = 0; i < uniformCount; i++) {
         let uniformName = gl.getActiveUniform(program, i).name;
@@ -530,8 +530,10 @@ const displayShaderSource = `
     uniform sampler2D uBloom;
     uniform sampler2D uSunrays;
     uniform sampler2D uDithering;
+    uniform sampler2D uImage;
     uniform vec2 ditherScale;
     uniform vec2 texelSize;
+    uniform vec2 uImageScale;
 
     vec3 linearToGamma (vec3 color) {
         color = max(color, vec3(0));
@@ -578,7 +580,7 @@ const displayShaderSource = `
     #endif
 
         float a = max(c.r, max(c.g, c.b));
-        gl_FragColor = vec4(c, a);
+        gl_FragColor = vec4(c, a) + texture2D(uImage, vec2(1,-1)*vUv*uImageScale).r;
     }
 `;
 
@@ -721,6 +723,8 @@ const advectionShader = compileShader(gl.FRAGMENT_SHADER, `
     varying vec2 vUv;
     uniform sampler2D uVelocity;
     uniform sampler2D uSource;
+    uniform sampler2D uImage;
+    uniform vec2 uImageScale;
     uniform vec2 texelSize;
     uniform vec2 dyeTexelSize;
     uniform float dt;
@@ -736,7 +740,6 @@ const advectionShader = compileShader(gl.FRAGMENT_SHADER, `
         vec4 b = texture2D(sam, (iuv + vec2(1.5, 0.5)) * tsize);
         vec4 c = texture2D(sam, (iuv + vec2(0.5, 1.5)) * tsize);
         vec4 d = texture2D(sam, (iuv + vec2(1.5, 1.5)) * tsize);
-
         return mix(mix(a, b, fuv.x), mix(c, d, fuv.x), fuv.y);
     }
 
@@ -749,6 +752,8 @@ const advectionShader = compileShader(gl.FRAGMENT_SHADER, `
         vec4 result = texture2D(uSource, coord);
     #endif
         float decay = 1.0 + dissipation * dt;
+        float color = texture2D(uImage, vec2(1,-1)*vUv*uImageScale).r;
+        decay *= 1. + 0.8 * color;
         gl_FragColor = result / decay;
     }`,
     ext.supportLinearFiltering ? null : ['MANUAL_FILTERING']
@@ -906,6 +911,7 @@ let sunrays;
 let sunraysTemp;
 
 let ditheringTexture = createTextureAsync('LDR_LLL1_0.png');
+let kaleamTexture = createTextureAsync('kaleam.png');
 
 const blurProgram            = new Program(blurVertexShader, blurShader);
 const copyProgram            = new Program(baseVertexShader, copyShader);
@@ -1078,7 +1084,6 @@ function createTextureAsync (url) {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, 1, 1, 0, gl.RGB, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255]));
 
     let obj = {
         texture,
@@ -1093,10 +1098,10 @@ function createTextureAsync (url) {
 
     let image = new Image();
     image.onload = () => {
-        obj.width = image.width;
+        obj.width  = image.width;
         obj.height = image.height;
-        gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, image);
+        gl.bindTexture( gl.TEXTURE_2D, texture );
+        gl.texImage2D( gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, image );
     };
     image.src = url;
 
@@ -1226,6 +1231,9 @@ function step (dt) {
     let velocityId = velocity.read.attach(0);
     gl.uniform1i(advectionProgram.uniforms.uVelocity, velocityId);
     gl.uniform1i(advectionProgram.uniforms.uSource, velocityId);
+    gl.uniform1i(advectionProgram.uniforms.uImage, kaleamTexture.attach( 1 ));
+    let scale = getTextureScale(kaleamTexture, dye.width, dye.height);
+    gl.uniform2f(advectionProgram.uniforms.uImageScale, scale.x, scale.y);
     gl.uniform1f(advectionProgram.uniforms.dt, dt);
     gl.uniform1f(advectionProgram.uniforms.dissipation, config.VELOCITY_DISSIPATION);
     blit(velocity.write.fbo);
@@ -1295,6 +1303,9 @@ function drawDisplay (fbo, width, height) {
     }
     if (config.SUNRAYS)
         gl.uniform1i(displayMaterial.uniforms.uSunrays, sunrays.attach(3));
+    gl.uniform1i(displayMaterial.uniforms.uImage, kaleamTexture.attach( 5 ));
+    let scale = getTextureScale(kaleamTexture, width, height);
+    gl.uniform2f(displayMaterial.uniforms.uImageScale, scale.x, scale.y);
     blit(fbo);
 }
 
@@ -1582,9 +1593,18 @@ function getResolution (resolution) {
 }
 
 function getTextureScale (texture, width, height) {
+    var
+      texture_ratio =  texture.height / texture.width,
+      screen_ratio = height / width,
+      width_adj = 1., height_adj = 1.;
+    if (texture_ratio > screen_ratio)
+        width_adj /= screen_ratio / texture_ratio;
+    else
+        height_adj /= texture_ratio / screen_ratio;
+        
     return {
-        x: width / texture.width,
-        y: height / texture.height
+        x: width_adj,
+        y: height_adj
     };
 }
 
